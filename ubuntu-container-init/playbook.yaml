@@ -1,0 +1,67 @@
+---
+- name: Ubuntu Container Init
+  hosts: endpoints
+  gather_facts: false
+  become: true
+  vars_files:
+    - vars/default.yaml
+  vars:
+    containers: "{{ query('inventory_hostnames', 'endpoints') }}"
+  tasks:
+    - name: Reset SSH Configuration to default
+      become: true
+      shell: sed -i '/^Port/d; /^PasswordAuthentication/d; /^PubkeyAuthentication/d' /etc/ssh/sshd_config
+      ignore_errors: true
+
+    - name: Remove Authorized Keys
+      become: true
+      shell: rm -f /home/{{ ansible_user }}/.ssh/authorized_keys
+      ignore_errors: true
+
+    - name: Remove SSH Socket Clutter
+      become: true
+      shell: rm -rf /etc/systemd/system/ssh.service.d/*
+      ignore_errors: true
+
+    - name: Reload systemd and stop SSH Socket Service
+      become: true
+      shell: systemctl daemon-reload && systemctl disable ssh.socket && systemctl stop ssh.socket
+
+    - name: Deploy new Authorized Keys
+      become: true
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ lookup('file', ssh_key_path) }}"
+
+    - name: Configure SSH to use PKA and change Port
+      become: true
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: "{{ item.line }}"
+        insertafter: "^#Port"
+      loop:
+        - { line: "Port {{ set_ssh_port }}" }
+        - { line: "PasswordAuthentication no" }
+        - { line: "PubkeyAuthentication yes" }
+
+    - name: Allow new Port in UFW
+      ufw:
+        rule: allow
+        port: "{{ set_ssh_port }}"
+        state: enabled
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Enable SSH Service
+      become: true
+      shell: systemctl enable ssh
+      ignore_errors: true
+
+    - name: Restart SSH Service
+      become: true
+      service:
+        name: ssh
+        state: restarted
